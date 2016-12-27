@@ -3,14 +3,20 @@
 
 import requests
 from bs4 import BeautifulSoup
-from urlparse import urljoin
+from urllib.parse import urljoin
+import calendar
+import iso8601
 
 class UrlInfo():
 
-    def __init__(self, url):
+    def __init__(self, url, text = '' ):
         self.url = url
         self.error = False
-        self.fetchHTML()
+        if text:
+            self.soup =  BeautifulSoup( text, "html5lib" )
+        else:
+            self.fetchHTML()
+
 
     def fetchHTML(self):
         self.soup = None
@@ -20,43 +26,148 @@ class UrlInfo():
         if r.status_code != 200:
             self.error = True
             return
-	# use apparent_encoding, seems to work better in the cases I tested.
-    	r.encoding = r.apparent_encoding 
-        self.soup = BeautifulSoup(r.text)
+        # use apparent_encoding, seems to work better in the cases I tested.
+        r.encoding = r.apparent_encoding
+        self.soup = BeautifulSoup(r.text, "html5lib" )
+
+
+    def __somethingOf( self, key = 'in-reply-to'):
+        """ Generic function to collect relations to other URLs """
+        if key in self.data:
+            return self.data[ key ]
+        # Identify first class="u-{{ key }}" or rel="{{ key }}" link
+        rel = self.soup.find('a', attrs={'class':'u-%s' % key })
+        if not rel:
+            rel = self.soup.find('a', attrs={'rel':'%s' % key })
+            if not rel:
+                return None
+        self.data[ key ] = rel['href']
+        return rel['href']
+
 
     def inReplyTo(self):
-        if self.data.has_key('in_reply_to'):
-            return self.data['in_reply_to']
-        # Identify first class="u-in-reply-to" or rel="in-reply-to" link
-        ir2 = self.soup.find('a', attrs={'class':'u-in-reply-to'})
-        if not ir2:
-            ir2 = self.soup.find('a', attrs={'rel':'in-reply-to'})
-            if not ir2:
-                return None
-        ir2_link = ir2['href']
-        self.data['in_reply_to'] = ir2_link
-        return ir2_link
+        return self.__somethingOf( 'in-reply-to' )
 
-    def pubDate(self):
+
+    def repostOf(self):
+        return self.__somethingOf( 'repost-of' )
+
+
+    def likeOf(self):
+        return self.__somethingOf( 'like-of' )
+
+
+    def bookmarkOf(self):
+        return self.__somethingOf( 'bookmark-of' )
+
+
+    def relationType(self):
+        if 'relation' in self.data:
+            return self.data['relation']
+
+        if self.inReplyTo() != None:
+            self.data['relation'] = 'in-reply-to'
+        elif self.repostOf() != None:
+            self.data['relation'] = 'repost-of'
+        elif self.likeOf() != None:
+            self.data['relation'] = 'like-of'
+        elif self.bookmarkOf() != None:
+            self.data['relation'] = 'bookmark-of'
+        else:
+            self.data['relation'] = 'webmention'
+
+        return self.data['relation']
+
+
+    def pubDate(self, form = 'text'):
+        k = 'pubDate_%s' % form
         # Get the time of the reply, if possible
-        if self.data.has_key('pubDate'):
-            return self.data['pubDate']
+        if k in self.data:
+            return self.data[ k ]
 
         ir2_time = self.soup.find(True, attrs={'class':'dt-published'})
+
         if ir2_time  and ir2_time.has_attr('datetime') :
-            self.data['pubDate'] = ir2_time['datetime']
-            return ir2_time['datetime']
-        
+            # pubdate _should_ be in iso8601... in theory
+            if form == 'datetime':
+                self.data[k] = iso8601.parse_date( ir2_time['datetime'] )
+            elif form == 'time':
+                d = iso8601.parse_date( ir2_time['datetime'] )
+                self.data[k] = calendar.timegm( d.timetuple() )
+            else:
+                self.data[k] = ir2_time['datetime']
+
+            return self.data[k]
+
+
     def title(self):
-        if self.data.has_key('title'):
+        if 'title' in self.data:
             return self.data['title']
-        # Get the title
-        title = self.soup.find('title').string
+        # try getting the title from a h-entry
+        hentry = self.soup.find(True,attrs={'class':'h-entry'} )
+        if hentry:
+            title = hentry.find(True,attrs={'class':'p-name'})
+            if title:
+                self.data['title'] = title
+                return self.data['title']
+        # fall back to page title, if h-entry failed
+        title = self.soup.find('title').string.strip()
         self.data['title'] = title
         return title
 
+
+    def content(self):
+        if 'content' in self.data:
+            return self.data['content']
+        # try to get content from e-content
+        content = self.soup.find(True, attrs={'class':'e-content'})
+        # or from e-summary
+        if not content:
+            content = self.soup.find(True, attrs={'class':'e-summary'})
+        # or from the first article
+        if not content:
+            content = self.soup.find('article')
+
+        if content:
+            self.data['content'] = content
+            return self.data['content']
+
+
+    def author(self):
+        if 'author' in self.data:
+            return self.data['author']
+
+        #Try using p-author
+        author = self.soup.find(True, attrs={'class':'p-author'})
+        #Try using h-card
+        if not author:
+            author = self.soup.find(True, attrs={'class':'h-card'})
+
+        if author:
+            self.data['author'] = {}
+
+            image = author.find('img')
+            if image:
+                image_src = image['src']
+                self.data['author']['img'] = urljoin(self.url, image_src)
+
+            name = author.find(True, attrs={'class':'p-name'})
+            if name:
+                self.data['author']['name'] = name.string.strip()
+
+            url = author.find(True, attrs={'class':'u-url'})
+            if url:
+                self.data['author']['url'] = url['href']
+
+            email = author.find(True, attrs={'class':'u-email'})
+            if email:
+                self.data['author']['email'] = email.string.strip()
+
+            return self.data['author']
+
+
     def image(self):
-        if self.data.has_key('image'):
+        if 'image' in self.data:
             return self.data['image']
 
         #Try using p-author
@@ -83,6 +194,7 @@ class UrlInfo():
             if image:
                 self.data['image'] = urljoin(self.url, image)
                 return self.data['image']
+
 
     def snippetWithLink(self, url):
         """ This method will try to return the first

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import itertools
-import urlparse
+import urllib.parse
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -36,7 +36,6 @@ class WebmentionSend():
                 'http_status': r.status_code,
             }
             return
-        self.html = r.text
 
         # look in the headers
         # XXX: it looks like requests doesn't handle multiple headers with the
@@ -45,12 +44,12 @@ class WebmentionSend():
         for link in r.headers.get('link', '').split(','):
             match = self.LINK_HEADER_RE.search(link)
             if match:
-                self.receiver_endpoint = urlparse.urljoin(self.target_url,
-                                                          match.group(1))
+                self.receiver_endpoint = match.group(1)
                 return
 
         # look in the content
-        soup = BeautifulSoup(self.html)
+        html = r.text
+        soup = BeautifulSoup(html)
         tag = None
         for name, rel in itertools.product(('link', 'a'), ('webmention', 'http://webmention.org/')):
             tag = soup.find(name, attrs={'rel': rel})

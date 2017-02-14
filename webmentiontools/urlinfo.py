@@ -3,7 +3,7 @@
 
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import calendar
 import iso8601
 
@@ -11,6 +11,7 @@ class UrlInfo():
 
     def __init__(self, url, text = '' ):
         self.url = url
+        self.realurl = url
         self.error = False
         if text:
             self.soup =  BeautifulSoup( text, "html5lib" )
@@ -22,10 +23,11 @@ class UrlInfo():
         self.soup = None
         self.data = dict()
         self.data['links_to'] = []
-        r = requests.get(self.url)
+        r = requests.get(self.url, allow_redirects=True)
         if r.status_code != 200:
             self.error = True
             return
+        self.realurl = r.url
         # use apparent_encoding, seems to work better in the cases I tested.
         r.encoding = r.apparent_encoding
         self.soup = BeautifulSoup(r.text, "html5lib" )
@@ -137,33 +139,47 @@ class UrlInfo():
         if 'author' in self.data:
             return self.data['author']
 
-        #Try using p-author
-        author = self.soup.find(True, attrs={'class':'p-author'})
-        #Try using h-card
+        searchfor = [ 'h-card', 'p-author' ]
+        author = None
+        for s in searchfor:
+            if author:
+                break
+
+            a = self.soup.find_all(True, attrs={'class':s})
+            for maybe in a:
+                if (maybe.find_parents(True, attrs={'class':'e-content'})):
+                    continue
+                else:
+                    author = maybe
+                    break
+
         if not author:
-            author = self.soup.find(True, attrs={'class':'h-card'})
+            return
 
-        if author:
-            self.data['author'] = {}
+        self.data['author'] = {}
 
-            image = author.find('img')
-            if image:
-                image_src = image['src']
-                self.data['author']['img'] = urljoin(self.url, image_src)
+        image = author.find('img')
+        if image:
+            image_src = image['src']
+            self.data['author']['img'] = urljoin(self.url, image_src)
 
-            name = author.find(True, attrs={'class':'p-name'})
-            if name:
-                self.data['author']['name'] = name.string.strip()
+        name = author.find(True, attrs={'class':'p-name'})
+        if name:
+            self.data['author']['name'] = name.string.strip()
 
-            url = author.find(True, attrs={'class':'u-url'})
-            if url:
-                self.data['author']['url'] = url['href']
+        url = author.find(True, attrs={'class':'u-url'})
+        if url:
+            self.data['author']['url'] = url['href']
+        else:
+            u = urlparse(self.source)
+            self.data['author']['url'] = '%s://%s' % (u.scheme, u.netloc)
 
-            email = author.find(True, attrs={'class':'u-email'})
-            if email:
-                self.data['author']['email'] = email.string.strip()
 
-            return self.data['author']
+        email = author.find(True, attrs={'class':'u-email'})
+        if email:
+            self.data['author']['email'] = email['href'].replace('mailto:', '')
+
+        return self.data['author']
 
 
     def image(self):

@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 class WebmentionSend():
 
     LINK_HEADER_RE = re.compile(
-        r'''<([^>]+)>; rel=["'](http://)?webmention(\.org/?)?["']''')
+        r'''<([^>]+)>; rel=["']?(http://)?webmention(\.org/?)?["']?''')
 
     def __init__(self, source, target, endpoint=None):
         self.source_url = source
@@ -28,14 +28,22 @@ class WebmentionSend():
 
     def _discoverEndpoint(self):
         r = requests.get(self.target_url, verify=False, **self.requests_kwargs)
+        content_type = r.headers.get('content-type') or 'text/html'
         if r.status_code != 200:
             self.error = {
-                'code':'BAD_TARGET_URL',
+                'code': 'BAD_TARGET_URL',
                 'error_description': 'Unable to get target URL.',
                 'request': 'GET %s' % self.target_url,
                 'http_status': r.status_code,
             }
             return
+        elif not content_type.startswith('text/html'):
+            self.error = {
+                'code': 'NO_ENDPOINT',
+                'error_description': 'Unable to discover webmention endpoint.'
+            }
+            return
+        self.html = r.text
 
         # look in the headers
         # XXX: it looks like requests doesn't handle multiple headers with the
@@ -48,8 +56,7 @@ class WebmentionSend():
                 return
 
         # look in the content
-        html = r.text
-        soup = BeautifulSoup(html)
+        soup = BeautifulSoup(self.html)
         tag = None
         for name, rel in itertools.product(('link', 'a'), ('webmention', 'http://webmention.org/')):
             tag = soup.find(name, attrs={'rel': rel})
@@ -78,7 +85,7 @@ class WebmentionSend():
                 'http_status': r.status_code,
                 }
             try:
-                self.error.update(r.json())
+                self.error['body_json'] = r.json()
             except:
                 self.error['body'] = r.text
             return False

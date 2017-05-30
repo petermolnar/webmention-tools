@@ -4,39 +4,40 @@
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-import calendar
-import iso8601
+import arrow
+from emoji import UNICODE_EMOJI
+from bleach import clean
 
 class UrlInfo():
 
-    def __init__(self, url, text = '' ):
+    def __init__(self, url, text = ''):
         self.url = url
-        self.realurl = url
         self.error = False
+        self.rawtext = None
+        self.soup = None
+        self.data = dict()
         if text:
-            self.soup =  BeautifulSoup( text, "html5lib" )
+            self.soup =  BeautifulSoup(text, "html5lib")
         else:
             self.fetchHTML()
 
 
     def fetchHTML(self):
-        self.soup = None
-        self.data = dict()
         self.data['links_to'] = []
         r = requests.get(self.url, allow_redirects=True)
         if r.status_code != 200:
             self.error = True
             return
-        self.realurl = r.url
         # use apparent_encoding, seems to work better in the cases I tested.
-        r.encoding = r.apparent_encoding
-        self.soup = BeautifulSoup(r.text, "html5lib" )
+        #r.encoding = r.apparent_encoding
+        self.rawtext = r.text
+        self.soup = BeautifulSoup(r.text, "html5lib")
 
 
-    def __somethingOf( self, key = 'in-reply-to'):
+    def __somethingOf(self, key):
         """ Generic function to collect relations to other URLs """
         if key in self.data:
-            return self.data[ key ]
+            return self.data[key]
         # Identify first class="u-{{ key }}" or rel="{{ key }}" link
         rel = self.soup.find('a', attrs={'class':'u-%s' % key })
         if not rel:
@@ -46,67 +47,55 @@ class UrlInfo():
         self.data[ key ] = rel['href']
         return rel['href']
 
-
-    def inReplyTo(self):
-        return self.__somethingOf( 'in-reply-to' )
-
-
-    def repostOf(self):
-        return self.__somethingOf( 'repost-of' )
-
-
-    def likeOf(self):
-        return self.__somethingOf( 'like-of' )
-
-
-    def bookmarkOf(self):
-        return self.__somethingOf( 'bookmark-of' )
-
-
+    @property
     def relationType(self):
         if 'relation' in self.data:
             return self.data['relation']
 
-        if self.inReplyTo() != None:
-            self.data['relation'] = 'in-reply-to'
-        elif self.repostOf() != None:
-            self.data['relation'] = 'repost-of'
-        elif self.likeOf() != None:
-            self.data['relation'] = 'like-of'
-        elif self.bookmarkOf() != None:
-            self.data['relation'] = 'bookmark-of'
-        else:
-            self.data['relation'] = 'webmention'
-
+        self.data['relation'] = 'webmention'
+        for maybe in ['in-reply-to', 'repost-of', 'bookmark-of', 'like-of']:
+            if self.__somethingOf(maybe):
+                self.data['relation'] = maybe
+                break
         return self.data['relation']
 
+    @property
+    def reacji(self):
+        if 'reacji' in self.data:
+            return self.data['reacji']
 
-    def pubDate(self, form = 'text'):
-        k = 'pubDate_%s' % form
-        # Get the time of the reply, if possible
-        if k in self.data:
-            return self.data[ k ]
+        txt = clean("%s" % self.content,
+            tags=[],
+            strip=True,
+            strip_comments=True
+        )
+        if txt in UNICODE_EMOJI:
+            self.data['reacji'] = txt
+        else:
+            self.data['reacji'] = False
+
+        return self.data['reacji']
+
+    @property
+    def pubDate(self):
+        if 'datetime' in self.data:
+            return self.data['datetime']
 
         ir2_time = self.soup.find(True, attrs={'class':'dt-published'})
+        if ir2_time and ir2_time.has_attr('datetime') :
+            dt = arrow.get(ir2_time['datetime'])
+            self.data['datetime'] = dt.datetime
+            return self.data['datetime']
 
-        if ir2_time  and ir2_time.has_attr('datetime') :
-            # pubdate _should_ be in iso8601... in theory
-            if form == 'datetime':
-                self.data[k] = iso8601.parse_date( ir2_time['datetime'] )
-            elif form == 'time':
-                d = iso8601.parse_date( ir2_time['datetime'] )
-                self.data[k] = calendar.timegm( d.timetuple() )
-            else:
-                self.data[k] = ir2_time['datetime']
-
-            return self.data[k]
+        return arrow.utcnow().datetime
 
 
+    @property
     def title(self):
         if 'title' in self.data:
             return self.data['title']
         # try getting the title from a h-entry
-        hentry = self.soup.find(True,attrs={'class':'h-entry'} )
+        hentry = self.soup.find(True,attrs={'class':'h-entry'})
         if hentry:
             title = hentry.find(True,attrs={'class':'p-name'})
             if title:
@@ -118,6 +107,7 @@ class UrlInfo():
         return title
 
 
+    @property
     def content(self):
         if 'content' in self.data:
             return self.data['content']
@@ -130,11 +120,14 @@ class UrlInfo():
         if not content:
             content = self.soup.find('article')
 
-        if content:
-            self.data['content'] = content
-            return self.data['content']
+        if not content:
+            logging.error('no content found')
+            content = '_no content found_'
 
+        self.data['content'] = content
+        return self.data['content']
 
+    @property
     def author(self):
         if 'author' in self.data:
             return self.data['author']
@@ -181,7 +174,7 @@ class UrlInfo():
 
         return self.data['author']
 
-
+    @property
     def image(self):
         if 'image' in self.data:
             return self.data['image']
@@ -223,7 +216,6 @@ class UrlInfo():
                 if p.name in ('p','div'):
                     return ' '.join(p.text.split()[0:30])
         return None
-
 
     def linksTo(self, url):
         # Check if page links to a specific URL.
